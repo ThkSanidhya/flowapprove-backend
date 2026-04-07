@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+        .button { background-color: #0066cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 3px; }
+        .footer { margin-top: 20px; font-size: 12px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Document Approval Required</h2>
+        <p>Hello <strong>{{ user_name }}</strong>,</p>
+        <p>A document has been assigned to you for approval.</p>
+        <p><strong>Document:</strong> {{ document_title }}</p>
+        <p><strong>Document ID:</strong> {{ document_id }}</p>
+        <p><strong>Workflow:</strong> {{ workflow_name }}</p>
+        <p><strong>Current Step:</strong> {{ current_step }}</p>
+        <p><strong>Uploaded by:</strong> {{ uploaded_by }}</p>
+        <p><strong>Uploaded on:</strong> {{ uploaded_at }}</p>
+        {% if comment %}
+        <p><strong>Additional comment:</strong> {{ comment }}</p>
+        {% endif %}
+        <p style="margin: 30px 0;">
+            <a href="{{ document_url }}" class="button">Review Document</a>
+        </p>
+        <p>Or copy this link: <a href="{{ document_url }}">{{ document_url }}</a></p>
+        <div class="footer">
+            This is an automated message from FlowApprove. Please do not reply.
+        </div>
+    </div>
+</body>
+</html>
