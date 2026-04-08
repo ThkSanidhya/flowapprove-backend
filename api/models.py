@@ -34,7 +34,7 @@ class WorkflowStep(models.Model):
 
 class Document(models.Model):
     STATUS_CHOICES = [('PENDING', 'Pending'), ('APPROVED', 'Approved'), ('REJECTED', 'Rejected')]
-    
+
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     file = models.FileField(upload_to='documents/')
@@ -42,15 +42,22 @@ class Document(models.Model):
     file_url = models.CharField(max_length=500)
     file_type = models.CharField(max_length=100)
     file_size = models.IntegerField()
-    
+
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='PENDING')
     current_step = models.IntegerField(default=1)
-    
+
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
     workflow = models.ForeignKey(Workflow, on_delete=models.SET_NULL, null=True, blank=True)
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='documents')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['organization', 'created_by']),
+            models.Index(fields=['organization', '-created_at']),
+        ]
 
 class DocumentApproval(models.Model):
     document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='approvals')
@@ -59,6 +66,13 @@ class DocumentApproval(models.Model):
     status = models.CharField(max_length=10, choices=Document.STATUS_CHOICES, default='PENDING')
     comment = models.TextField(blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['document', 'step_order']),
+            models.Index(fields=['user', 'status']),
+        ]
+        unique_together = [('document', 'step_order')]
 
 class DocumentComment(models.Model):
     document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='comments')

@@ -1,13 +1,12 @@
 import os
 import uuid
 from .utils import send_email_notification
-from django.urls import reverse
 from django.conf import settings
-from django.db import transaction
-from django.db import models  # ADD THIS IMPORT for Q objects
-from rest_framework import status
+from django.db import connection, transaction
+from django.db import models  # for Q / F expressions
+from django.db.models import F
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -16,6 +15,18 @@ from .serializers import *
 from django.utils import timezone
 
 User = get_user_model()
+
+# ==================== HEALTH ====================
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def healthz(request):
+    """Liveness + DB reachability probe for Docker / load balancers."""
+    try:
+        connection.ensure_connection()
+    except Exception as e:
+        return Response({'status': 'fail', 'error': str(e)}, status=503)
+    return Response({'status': 'ok'})
 
 # ==================== AUTH ====================
 
@@ -269,7 +280,7 @@ def upload_document(request):
             file_size=file_size,
             organization=request.user.organization,
             created_by=request.user,
-            workflow_id=workflow_id,
+            workflow=workflow,
             status='PENDING',
             current_step=1
         )
@@ -296,13 +307,14 @@ def upload_document(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_documents(request):
+    base = Document.objects.filter(
+        organization=request.user.organization
+    ).select_related('created_by', 'workflow')
     if request.user.role == 'ADMIN':
-        docs = Document.objects.filter(organization=request.user.organization)
+        docs = base
     else:
-        docs = Document.objects.filter(
-            organization=request.user.organization
-        ).filter(
-            models.Q(created_by=request.user) | 
+        docs = base.filter(
+            models.Q(created_by=request.user) |
             models.Q(approvals__user=request.user)
         ).distinct()
     return Response(DocumentSerializer(docs, many=True).data)
@@ -311,7 +323,18 @@ def get_documents(request):
 @permission_classes([IsAuthenticated])
 def get_document_detail(request, id):
     try:
-        doc = Document.objects.get(id=id, organization=request.user.organization)
+        doc = (
+            Document.objects
+            .select_related('workflow', 'created_by')
+            .prefetch_related(
+                'approvals__user',
+                'workflow__steps__user',
+                'comments__user',
+                'history__user',
+                'versions__uploaded_by',
+            )
+            .get(id=id, organization=request.user.organization)
+        )
     except Document.DoesNotExist:
         return Response({'error': 'Not found'}, status=404)
     
@@ -495,13 +518,16 @@ def dashboard_stats(request):
             models.Q(created_by=request.user) |
             models.Q(approvals__user=request.user)
         ).distinct()
-    
-    pending_my_action = 0
-    for doc in docs:
-        approval = doc.approvals.filter(step_order=doc.current_step, user=request.user).first()
-        if doc.status == 'PENDING' and approval and approval.status == 'PENDING':
-            pending_my_action += 1
-    
+
+    # Single aggregated query instead of per-document loop
+    pending_my_action = DocumentApproval.objects.filter(
+        document__in=docs,
+        document__status='PENDING',
+        user=request.user,
+        status='PENDING',
+        step_order=F('document__current_step'),
+    ).count()
+
     return Response({
         'totalDocuments': docs.count(),
         'inProgress': docs.filter(status='PENDING').count(),
@@ -534,18 +560,25 @@ def get_user_documents(request):
     if status:
         docs = docs.filter(status=status)
     if search:
-        docs = docs.filter(
-            models.Q(title__icontains=search) |
-            models.Q(id__icontains=search)
-        )
-    
+        q = models.Q(title__icontains=search)
+        if search.isdigit():
+            q |= models.Q(id=int(search))
+        docs = docs.filter(q)
+
     total = docs.count()
     start = (page - 1) * limit
-    docs = docs.order_by('-created_at')[start:start+limit]
-    
+    docs = (
+        docs.select_related('created_by', 'workflow')
+        .prefetch_related('workflow__steps', 'approvals__user')
+        .order_by('-created_at')[start:start + limit]
+    )
+
     result = []
     for doc in docs:
-        current_approval = doc.approvals.filter(step_order=doc.current_step).first()
+        current_approval = next(
+            (a for a in doc.approvals.all() if a.step_order == doc.current_step),
+            None,
+        )
         can_approve = (
             doc.status == 'PENDING' and 
             current_approval and 
@@ -563,11 +596,11 @@ def get_user_documents(request):
             'status': doc.status,
             'statusColor': '#28a745' if doc.status == 'APPROVED' else '#dc3545' if doc.status == 'REJECTED' else '#ffc107',
             'currentStep': doc.current_step,
-            'totalSteps': doc.workflow.steps.count() if doc.workflow else 1,
+            'totalSteps': len(doc.workflow.steps.all()) if doc.workflow else 1,
             'currentOwner': current_approval.user.name if current_approval else 'No assignee',
             'isMyTurn': can_approve,
             'workflowName': doc.workflow.name if doc.workflow else None,
-            'progress': round(((doc.current_step - 1) / max(doc.workflow.steps.count(), 1)) * 100) if doc.workflow else 0
+            'progress': round(((doc.current_step - 1) / max(len(doc.workflow.steps.all()), 1)) * 100) if doc.workflow else 0
         })
     
     return Response({
