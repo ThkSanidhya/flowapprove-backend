@@ -153,20 +153,28 @@ def workflows(request):
     
     # POST - Create workflow
     data = request.data
-    workflow = Workflow.objects.create(
-        name=data['name'],
-        organization=request.user.organization
-    )
-    for i, step in enumerate(data.get('steps', [])):
-        try:
-            step_user = User.objects.get(id=step['userId'], organization=request.user.organization)
-        except User.DoesNotExist:
-            return Response({'error': f"User {step['userId']} not in your organization"}, status=400)
-        WorkflowStep.objects.create(
-            workflow=workflow,
-            order=i + 1,
-            user=step_user
-        )
+    try:
+        with transaction.atomic():
+            workflow = Workflow.objects.create(
+                name=data['name'],
+                organization=request.user.organization
+            )
+            for i, step in enumerate(data.get('steps', [])):
+                try:
+                    step_user = User.objects.get(
+                        id=step['userId'], organization=request.user.organization
+                    )
+                except User.DoesNotExist:
+                    raise ValueError(
+                        f"User {step['userId']} not in your organization"
+                    )
+                WorkflowStep.objects.create(
+                    workflow=workflow,
+                    order=i + 1,
+                    user=step_user
+                )
+    except ValueError as e:
+        return Response({'error': str(e)}, status=400)
     return Response(WorkflowSerializer(workflow).data, status=201)
 
 @api_view(['GET', 'PUT', 'DELETE'])
