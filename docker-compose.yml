@@ -1,0 +1,71 @@
+# FlowApprove local stack — mirrors prod topology (db + backend + frontend).
+#
+# Run from this directory (flowapprove-backend/). The frontend build
+# context is a relative path to the sibling repo, so the layout must be:
+#
+#   flowapprove/
+#   ├── flowapprove-backend/     <-- you are here
+#   └── flowapprove-frontend/frontend/
+#
+# Usage:
+#   docker compose up --build
+#   docker compose exec backend python manage.py createsuperuser
+#
+# Frontend:  http://localhost:5173
+# Backend:   http://localhost:8000/api
+# MySQL:     localhost:3306 (user/pass: flowapprove / flowapprove)
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: flowapprove
+      MYSQL_USER: flowapprove
+      MYSQL_PASSWORD: flowapprove
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uflowapprove", "-pflowapprove"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DJANGO_SECRET_KEY: dev-only-change-me
+      DJANGO_DEBUG: "True"
+      DJANGO_ALLOWED_HOSTS: "*"
+      DB_NAME: flowapprove
+      DB_USER: flowapprove
+      DB_PASSWORD: flowapprove
+      DB_HOST: db
+      DB_PORT: "3306"
+    ports:
+      - "8000:8000"
+    volumes:
+      - media_data:/app/media
+
+  frontend:
+    build:
+      context: ../flowapprove-frontend/frontend
+      args:
+        VITE_API_URL: http://localhost:8000/api
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  db_data:
+  media_data:
