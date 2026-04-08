@@ -13,7 +13,7 @@ from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import *
 from .serializers import *
-from datetime import datetime
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -158,10 +158,14 @@ def workflows(request):
         organization=request.user.organization
     )
     for i, step in enumerate(data.get('steps', [])):
+        try:
+            step_user = User.objects.get(id=step['userId'], organization=request.user.organization)
+        except User.DoesNotExist:
+            return Response({'error': f"User {step['userId']} not in your organization"}, status=400)
         WorkflowStep.objects.create(
             workflow=workflow,
             order=i + 1,
-            user_id=step['userId']
+            user=step_user
         )
     return Response(WorkflowSerializer(workflow).data, status=201)
 
@@ -185,10 +189,14 @@ def workflow_detail(request, id):
         workflow.save()
         workflow.steps.all().delete()
         for i, step in enumerate(data.get('steps', [])):
+            try:
+                step_user = User.objects.get(id=step['userId'], organization=request.user.organization)
+            except User.DoesNotExist:
+                return Response({'error': f"User {step['userId']} not in your organization"}, status=400)
             WorkflowStep.objects.create(
                 workflow=workflow,
                 order=i + 1,
-                user_id=step['userId']
+                user=step_user
             )
         return Response(WorkflowSerializer(workflow).data)
     
@@ -208,7 +216,27 @@ def upload_document(request):
     title = request.POST.get('title', file.name)
     description = request.POST.get('description', '')
     workflow_id = request.POST.get('workflowId')
-    
+
+    # Validate file size and type
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+    if file.size > MAX_FILE_SIZE:
+        return Response({'error': 'File too large (max 50MB)'}, status=413)
+    ALLOWED_TYPES = {
+        'application/pdf', 'image/jpeg', 'image/png',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }
+    if file.content_type not in ALLOWED_TYPES:
+        return Response({'error': f'Unsupported file type: {file.content_type}'}, status=400)
+
+    # Validate workflow belongs to the user's organization
+    workflow = None
+    if workflow_id:
+        try:
+            workflow = Workflow.objects.get(id=workflow_id, organization=request.user.organization)
+        except Workflow.DoesNotExist:
+            return Response({'error': 'Workflow not found'}, status=404)
+
     # Save file
     ext = os.path.splitext(file.name)[1]
     file_name = f"{uuid.uuid4().hex}{ext}"
@@ -239,8 +267,7 @@ def upload_document(request):
         )
         
         # Create approvals
-        if workflow_id:
-            workflow = Workflow.objects.get(id=workflow_id)
+        if workflow:
             for step in workflow.steps.all():
                 DocumentApproval.objects.create(
                     document=doc,
@@ -333,30 +360,35 @@ def get_document_detail(request, id):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def approve_document(request, id):
-    try:
-        doc = Document.objects.get(id=id)
-    except Document.DoesNotExist:
-        return Response({'error': 'Document not found'}, status=404)
-    
-    current_approval = doc.approvals.filter(step_order=doc.current_step, user=request.user).first()
-    if not current_approval:
-        return Response({'error': 'You are not authorized to approve this document'}, status=403)
-    
-    if current_approval.status != 'PENDING':
-        return Response({'error': 'This step has already been processed'}, status=400)
-    
-    current_approval.status = 'APPROVED'
-    current_approval.comment = request.data.get('comment', '')
-    current_approval.approved_at = datetime.now()
-    current_approval.save()
-    
-    total_steps = doc.workflow.steps.count() if doc.workflow else 1
-    if doc.current_step < total_steps:
-        doc.current_step += 1
-        doc.save()
-    else:
-        doc.status = 'APPROVED'
-        doc.save()
+    with transaction.atomic():
+        try:
+            doc = Document.objects.select_for_update().get(
+                id=id, organization=request.user.organization
+            )
+        except Document.DoesNotExist:
+            return Response({'error': 'Document not found'}, status=404)
+
+        current_approval = doc.approvals.select_for_update().filter(
+            step_order=doc.current_step, user=request.user
+        ).first()
+        if not current_approval:
+            return Response({'error': 'You are not authorized to approve this document'}, status=403)
+
+        if current_approval.status != 'PENDING':
+            return Response({'error': 'This step has already been processed'}, status=400)
+
+        current_approval.status = 'APPROVED'
+        current_approval.comment = request.data.get('comment', '')
+        current_approval.approved_at = timezone.now()
+        current_approval.save()
+
+        total_steps = doc.workflow.steps.count() if doc.workflow else 1
+        if doc.current_step < total_steps:
+            doc.current_step += 1
+            doc.save()
+        else:
+            doc.status = 'APPROVED'
+            doc.save()
     
     DocumentHistory.objects.create(
         document=doc,
@@ -371,10 +403,15 @@ def approve_document(request, id):
 @permission_classes([IsAuthenticated])
 def reject_document(request, id):
     try:
-        doc = Document.objects.get(id=id)
+        doc = Document.objects.get(id=id, organization=request.user.organization)
     except Document.DoesNotExist:
         return Response({'error': 'Document not found'}, status=404)
-    
+
+    # Only the user assigned to the current step may reject
+    current_approval = doc.approvals.filter(step_order=doc.current_step, user=request.user).first()
+    if not current_approval:
+        return Response({'error': 'You are not authorized to reject this document'}, status=403)
+
     doc.status = 'REJECTED'
     doc.save()
     
@@ -391,7 +428,7 @@ def reject_document(request, id):
 @permission_classes([IsAuthenticated])
 def send_back_document(request, id):
     try:
-        doc = Document.objects.get(id=id)
+        doc = Document.objects.get(id=id, organization=request.user.organization)
     except Document.DoesNotExist:
         return Response({'error': 'Document not found'}, status=404)
     
