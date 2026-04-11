@@ -16,6 +16,19 @@ from django.utils import timezone
 
 User = get_user_model()
 
+
+def _progress_for(doc):
+    """0–100 progress for a document taking terminal states into account."""
+    if doc.status == 'APPROVED':
+        return 100
+    if doc.status in ('REJECTED', 'CANCELLED'):
+        return 0
+    total = len(doc.workflow.steps.all()) if doc.workflow else 1
+    if total <= 0:
+        return 0
+    return round(((doc.current_step - 1) / total) * 100)
+
+
 # ==================== HEALTH ====================
 
 @api_view(['GET'])
@@ -101,9 +114,12 @@ def users(request):
     
     # POST - Create new user
     data = request.data
+    for field in ('name', 'email', 'password'):
+        if not data.get(field):
+            return Response({'error': f'{field} is required'}, status=400)
     if User.objects.filter(email=data['email']).exists():
         return Response({'error': 'User already exists'}, status=400)
-    
+
     user = User.objects.create_user(
         username=data['email'],
         email=data['email'],
@@ -114,17 +130,20 @@ def users(request):
     )
     return Response(UserSerializer(user).data, status=201)
 
-@api_view(['PUT', 'DELETE'])
+@api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def user_detail(request, id):
     if request.user.role != 'ADMIN':
         return Response({'error': 'Admin access required'}, status=403)
-    
+
     try:
         user = User.objects.get(id=id, organization=request.user.organization)
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=404)
-    
+
+    if request.method == 'GET':
+        return Response(UserSerializer(user).data)
+
     if request.method == 'PUT':
         data = request.data
         user.name = data.get('name', user.name)
@@ -164,6 +183,10 @@ def workflows(request):
     
     # POST - Create workflow
     data = request.data
+    if not data.get('name'):
+        return Response({'error': 'Workflow name is required'}, status=400)
+    if not data.get('steps'):
+        return Response({'error': 'At least one step is required'}, status=400)
     try:
         with transaction.atomic():
             workflow = Workflow.objects.create(
@@ -672,6 +695,51 @@ def upload_version(request, id):
     })
 
 
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def document_comments(request, id):
+    """List or create a comment on a document. Page-anchored comments are
+    the same row with a non-null page_number."""
+    try:
+        doc = Document.objects.get(id=id, organization=request.user.organization)
+    except Document.DoesNotExist:
+        return Response({'error': 'Document not found'}, status=404)
+
+    if request.method == 'GET':
+        comments = doc.comments.select_related('user').order_by('-created_at')
+        return Response([
+            {
+                'id': c.id,
+                'user': {'id': c.user.id, 'name': c.user.name},
+                'comment': c.comment,
+                'pageNumber': c.page_number,
+                'createdAt': c.created_at,
+            }
+            for c in comments
+        ])
+
+    # POST
+    text = request.data.get('comment', '').strip()
+    if not text:
+        return Response({'error': 'Comment is required'}, status=400)
+    page_number = request.data.get('pageNumber') or request.data.get('page_number')
+    try:
+        page_number = int(page_number) if page_number not in (None, '', 0) else None
+    except (TypeError, ValueError):
+        page_number = None
+
+    comment = DocumentComment.objects.create(
+        document=doc, user=request.user, comment=text, page_number=page_number
+    )
+    return Response({
+        'id': comment.id,
+        'user': {'id': request.user.id, 'name': request.user.name},
+        'comment': comment.comment,
+        'pageNumber': comment.page_number,
+        'createdAt': comment.created_at,
+    }, status=201)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def recall_document(request, id):
@@ -801,7 +869,7 @@ def get_user_documents(request):
             'currentOwner': current_approval.user.name if current_approval else 'No assignee',
             'isMyTurn': can_approve,
             'workflowName': doc.workflow.name if doc.workflow else None,
-            'progress': round(((doc.current_step - 1) / max(len(doc.workflow.steps.all()), 1)) * 100) if doc.workflow else 0
+            'progress': _progress_for(doc),
         })
     
     return Response({

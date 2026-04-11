@@ -5,7 +5,7 @@ from .models import *
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'name', 'role', 'organization']
+        fields = ['id', 'username', 'email', 'name', 'role', 'organization', 'date_joined']
 
 class RegisterSerializer(serializers.Serializer):
     name = serializers.CharField()
@@ -40,9 +40,10 @@ class DocumentApprovalSerializer(serializers.ModelSerializer):
 
 class DocumentSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.name', read_only=True)
+    creator = UserSerializer(source='created_by', read_only=True)
     approvals = DocumentApprovalSerializer(many=True, read_only=True)
     workflow_name = serializers.CharField(source='workflow.name', read_only=True)
-    
+
     class Meta:
         model = Document
         fields = '__all__'
