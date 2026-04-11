@@ -13,23 +13,22 @@
 #
 # Frontend:  http://localhost:5173
 # Backend:   http://localhost:8000/api
-# MySQL:     localhost:3306 (user/pass: flowapprove / flowapprove)
+# Postgres:  localhost:5432 (user/pass: flowapprove / flowapprove)
 
 services:
   db:
-    image: mysql:8.0
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: rootpw
-      MYSQL_DATABASE: flowapprove
-      MYSQL_USER: flowapprove
-      MYSQL_PASSWORD: flowapprove
+      POSTGRES_DB: flowapprove
+      POSTGRES_USER: flowapprove
+      POSTGRES_PASSWORD: flowapprove
     ports:
-      - "3306:3306"
+      - "5432:5432"
     volumes:
-      - db_data:/var/lib/mysql
+      - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uflowapprove", "-pflowapprove"]
+      test: ["CMD-SHELL", "pg_isready -U flowapprove -d flowapprove"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -49,7 +48,7 @@ services:
       DB_USER: flowapprove
       DB_PASSWORD: flowapprove
       DB_HOST: db
-      DB_PORT: "3306"
+      DB_PORT: "5432"
     ports:
       - "8000:8000"
     volumes:

@@ -52,7 +52,7 @@ Uploads live in `MEDIA_ROOT/documents/` and `MEDIA_ROOT/versions/`. `Document.fi
 ## Settings notes
 
 `flowapprove_backend/settings.py` is dev-friendly:
-- MySQL via env vars (defaults: `flowapprove` db on localhost)
+- PostgreSQL via env vars (defaults: `flowapprove` db on localhost)
 - `DEBUG` defaults to `True`; flip to `False` in prod
 - `CORS_ALLOW_ALL_ORIGINS = True` — dev only; replace with an explicit allowlist before deploying
 - SMTP creds still hardcoded; migrate to env vars before production

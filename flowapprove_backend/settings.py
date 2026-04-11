@@ -55,17 +55,29 @@ WSGI_APPLICATION = 'flowapprove_backend.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.mysql',
+        'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.environ.get('DB_NAME', 'flowapprove'),
-        'USER': os.environ.get('DB_USER', 'root'),
+        'USER': os.environ.get('DB_USER', 'postgres'),
         'PASSWORD': os.environ.get('DB_PASSWORD', ''),
         'HOST': os.environ.get('DB_HOST', 'localhost'),
-        'PORT': os.environ.get('DB_PORT', '3306'),
-        'OPTIONS': {
-            'charset': 'utf8mb4',
-        },
+        'PORT': os.environ.get('DB_PORT', '5432'),
     }
 }
+
+# Hosting providers (Render, Railway, Heroku) expose a single DATABASE_URL.
+# If it's present, parse it and override the individual fields above.
+_database_url = os.environ.get('DATABASE_URL')
+if _database_url:
+    from urllib.parse import urlparse
+    _parsed = urlparse(_database_url)
+    DATABASES['default'].update({
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': (_parsed.path or '/').lstrip('/') or 'postgres',
+        'USER': _parsed.username or '',
+        'PASSWORD': _parsed.password or '',
+        'HOST': _parsed.hostname or 'localhost',
+        'PORT': str(_parsed.port or 5432),
+    })
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

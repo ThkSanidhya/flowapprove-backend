@@ -6,6 +6,8 @@ Sibling repos: [flowapprove-frontend](https://github.com/ThkSanidhya/flowapprove
 
 The easiest way to run the full stack is from the [**meta-repo**](https://github.com/ThkSanidhya/flowapprove) with Docker. Keep reading if you want to run the backend natively.
 
+**Database**: PostgreSQL 16. (Earlier versions used MySQL; the current code is Postgres-only — `psycopg2-binary` wheels mean no C++ build tools are needed on Windows.)
+
 ---
 
 ## Quickstart — Docker
@@ -16,7 +18,7 @@ From the parent directory (with sibling `flowapprove-frontend/` cloned):
 docker compose up --build
 ```
 
-This starts MySQL 8 + the backend (gunicorn) + the frontend (nginx). See the top-level meta-repo README for details.
+This starts Postgres 16 + the backend (gunicorn) + the frontend (nginx). See the top-level meta-repo README for details.
 
 ---
 
@@ -25,7 +27,7 @@ This starts MySQL 8 + the backend (gunicorn) + the frontend (nginx). See the top
 ### Prerequisites
 
 - **Python 3.12+**
-- **MySQL 8+** running locally (or reachable via env vars)
+- **PostgreSQL 14+** running locally (or reachable via env vars)
 
 ### 1. Clone and create a virtualenv
 
@@ -37,24 +39,20 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Create a MySQL database
+### 2. Create a Postgres database
 
 ```bash
-mysql -u root -p -e "CREATE DATABASE flowapprove CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+sudo -u postgres createuser --pwprompt flowapprove    # set a password
+sudo -u postgres createdb -O flowapprove flowapprove
 ```
 
-### 3. Set environment variables
+(macOS Homebrew Postgres: skip `sudo -u postgres` — run `createuser --pwprompt flowapprove` and `createdb -O flowapprove flowapprove` directly.)
 
-Copy the template and fill in real values:
+### 3. Set environment variables
 
 ```bash
 cp .env.example .env
 # edit .env — at minimum set DB_PASSWORD and DJANGO_SECRET_KEY
-```
-
-Then load it:
-
-```bash
 export $(grep -v '^#' .env | xargs)
 ```
 
@@ -70,13 +68,15 @@ python manage.py runserver    # http://127.0.0.1:8000
 
 ## Quickstart — native (Windows)
 
+> **Seriously, just use Docker Desktop on Windows.** The native setup works but Docker is one command: `docker compose up --build`.
+
 ### Prerequisites
 
-- **Python 3.12+** from <https://www.python.org/downloads/> (during install, tick **"Add python.exe to PATH"**)
-- **MySQL 8+** from <https://dev.mysql.com/downloads/installer/>
-- **Microsoft C++ Build Tools** (required by `mysqlclient`): <https://visualstudio.microsoft.com/visual-cpp-build-tools/> → install "Desktop development with C++"
+- **Python 3.12+** from <https://www.python.org/downloads/> (tick **"Add python.exe to PATH"** during install)
+- **PostgreSQL 16** from <https://www.postgresql.org/download/windows/> (the EDB installer). Remember the `postgres` superuser password you set.
+- **Git for Windows** from <https://git-scm.com/download/win>
 
-> **If the C++ Build Tools are painful**, just use Docker Desktop. It's what we recommend for Windows users.
+No C++ Build Tools required — `psycopg2-binary` ships pre-compiled wheels for Windows.
 
 ### 1. Clone and create a virtualenv (PowerShell)
 
@@ -94,29 +94,28 @@ If PowerShell blocks the activation script, run once:
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-### 2. Create a MySQL database
+### 2. Create a Postgres database
 
-Open **MySQL Workbench** or **MySQL Command Line Client** and run:
+Open **pgAdmin** (installed with Postgres), or run `psql -U postgres` from the Start menu search:
 
 ```sql
-CREATE DATABASE flowapprove CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER flowapprove WITH PASSWORD 'your-password';
+CREATE DATABASE flowapprove OWNER flowapprove;
 ```
 
 ### 3. Set environment variables (PowerShell)
 
 ```powershell
 $env:DJANGO_SECRET_KEY = "dev-only-secret"
-$env:DJANGO_DEBUG = "True"
-$env:DB_NAME = "flowapprove"
-$env:DB_USER = "root"
-$env:DB_PASSWORD = "your-mysql-password"
-$env:DB_HOST = "127.0.0.1"
-$env:DB_PORT = "3306"
+$env:DJANGO_DEBUG      = "True"
+$env:DB_NAME           = "flowapprove"
+$env:DB_USER           = "flowapprove"
+$env:DB_PASSWORD       = "your-password"
+$env:DB_HOST           = "127.0.0.1"
+$env:DB_PORT           = "5432"
 ```
 
-(Command Prompt uses `set DB_PASSWORD=your-mysql-password` instead.)
-
-To persist them between sessions, either edit `.env` and use a loader like `dotenv-cli`, or set them in System Properties → Environment Variables.
+Command Prompt uses `set DB_PASSWORD=your-password` instead. To persist across sessions, set them via **System Properties → Environment Variables**.
 
 ### 4. Migrate and run
 
@@ -132,13 +131,13 @@ The API is now available at **http://127.0.0.1:8000/**.
 
 ## Useful endpoints
 
-| URL                               | Purpose                                   |
-|-----------------------------------|-------------------------------------------|
-| `http://localhost:8000/api/docs/` | Swagger UI — interactive API explorer     |
-| `http://localhost:8000/api/redoc/`| Redoc reference documentation             |
-| `http://localhost:8000/api/schema/` | Raw OpenAPI 3 YAML                      |
-| `http://localhost:8000/healthz`   | Liveness + DB probe (no auth)             |
-| `http://localhost:8000/admin/`    | Django admin (use your superuser account) |
+| URL                                  | Purpose                                   |
+|--------------------------------------|-------------------------------------------|
+| `http://localhost:8000/api/docs/`    | Swagger UI — interactive API explorer     |
+| `http://localhost:8000/api/redoc/`   | Redoc reference documentation             |
+| `http://localhost:8000/api/schema/`  | Raw OpenAPI 3 YAML                        |
+| `http://localhost:8000/healthz`      | Liveness + DB probe (no auth)             |
+| `http://localhost:8000/admin/`       | Django admin (superuser account)          |
 
 ---
 
@@ -149,7 +148,7 @@ The API is now available at **http://127.0.0.1:8000/**.
 | Apply migrations          | `python manage.py migrate` |
 | Create a migration        | `python manage.py makemigrations api` |
 | Dev server                | `python manage.py runserver` |
-| Run tests (SQLite, no MySQL needed) | `python manage.py test api --settings=flowapprove_backend.settings_test` |
+| Run tests (SQLite, no Postgres needed) | `python manage.py test api --settings=flowapprove_backend.settings_test` |
 | Run a single test         | `python manage.py test api.tests.RecallDocumentTests.test_creator_can_recall_pending_document --settings=flowapprove_backend.settings_test` |
 | Create an admin           | `python manage.py createsuperuser` |
 | Django system check       | `python manage.py check --deploy` |
@@ -171,17 +170,35 @@ Deeper dive: [flowapprove-docs/docs/architecture.md](https://github.com/ThkSanid
 
 ---
 
+## Deploying to a free host
+
+The backend is designed so a single `DATABASE_URL` env var overrides all the individual `DB_*` vars — this matches what Render, Railway, Heroku, Fly.io, and Neon all inject automatically.
+
+**Render (recommended)** — free web service + free Postgres:
+
+1. Push to a GitHub repo.
+2. On Render: **New Web Service** → connect the repo → pick **Docker**.
+3. Add a **PostgreSQL** add-on (free tier).
+4. In the web service **Environment** tab, add:
+   - `DJANGO_SECRET_KEY` = a 64-char random string
+   - `DJANGO_DEBUG` = `False`
+   - `DJANGO_ALLOWED_HOSTS` = `<your-render-domain>.onrender.com`
+   - `CORS_ORIGINS` = `https://<your-frontend-host>`
+   - `DATABASE_URL` — click "Add from Database" and pick the Postgres you created.
+5. Deploy. The Dockerfile runs `migrate` + `collectstatic` on boot.
+
+**Railway** — same story, add the Postgres plugin and link its `DATABASE_URL` to the backend service.
+
+See `flowapprove-docs/docs/deployment.md` for the full production checklist.
+
+---
+
 ## Troubleshooting
 
-**`MySQLdb.OperationalError: (1045, "Access denied for user 'root'@'localhost'")`** — your MySQL password is wrong or `DB_PASSWORD` isn't exported. On Windows check `$env:DB_PASSWORD` (PowerShell) or `echo %DB_PASSWORD%` (cmd).
+**`django.db.utils.OperationalError: connection to server at "localhost"`** — Postgres isn't running, or `DB_HOST` / `DB_PORT` are wrong. Check `pg_isready -h 127.0.0.1 -p 5432` (Linux/macOS) or open **Services** and make sure `postgresql-x64-16` is running (Windows).
 
-**`MySQLdb.OperationalError: (1366, "Incorrect string value: '\xF0\x9F...'")`** — your database is using `latin1` or 3-byte `utf8` instead of `utf8mb4`. Fix with:
-```sql
-ALTER DATABASE flowapprove CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
+**`FATAL: password authentication failed for user "flowapprove"`** — password mismatch. On Linux/macOS try `PGPASSWORD=... psql -h 127.0.0.1 -U flowapprove flowapprove` to confirm the creds work outside Django.
 
 **`Column 'organization_id' cannot be null` when creating a workflow** — the logged-in user's `organization` is NULL (usually a `createsuperuser` account). Register normally through the frontend, or assign the superuser to an org in the Django admin.
 
-**`mysqlclient` wheel build fails on Windows** — install Microsoft C++ Build Tools, or switch to Docker Desktop.
-
-**`CORS error in browser`** — backend has `CORS_ALLOW_ALL_ORIGINS=True` in dev. Confirm `DJANGO_DEBUG=True` in your env.
+**CORS error in the browser console** — backend is running with `DJANGO_DEBUG=True` (wide-open CORS) or `CORS_ORIGINS` doesn't include the frontend URL. Check both.
