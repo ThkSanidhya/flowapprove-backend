@@ -174,22 +174,30 @@ Deeper dive: [flowapprove-docs/docs/architecture.md](https://github.com/ThkSanid
 
 The backend is designed so a single `DATABASE_URL` env var overrides all the individual `DB_*` vars — this matches what Render, Railway, Heroku, Fly.io, and Neon all inject automatically.
 
-**Render (recommended)** — free web service + free Postgres:
+### Render — one click via `render.yaml`
 
-1. Push to a GitHub repo.
-2. On Render: **New Web Service** → connect the repo → pick **Docker**.
-3. Add a **PostgreSQL** add-on (free tier).
-4. In the web service **Environment** tab, add:
-   - `DJANGO_SECRET_KEY` = a 64-char random string
-   - `DJANGO_DEBUG` = `False`
-   - `DJANGO_ALLOWED_HOSTS` = `<your-render-domain>.onrender.com`
-   - `CORS_ORIGINS` = `https://<your-frontend-host>`
-   - `DATABASE_URL` — click "Add from Database" and pick the Postgres you created.
-5. Deploy. The Dockerfile runs `migrate` + `collectstatic` on boot.
+This repo ships with a **Render Blueprint** at [`render.yaml`](./render.yaml) that provisions both the Postgres database and the web service in one step.
 
-**Railway** — same story, add the Postgres plugin and link its `DATABASE_URL` to the backend service.
+1. Push this repo to GitHub.
+2. Go to <https://dashboard.render.com/blueprints> → **New Blueprint Instance**.
+3. Pick the `flowapprove-backend` repo.
+4. Render reads `render.yaml` and shows you what it's about to create:
+   - `flowapprove-db` — free Postgres 16
+   - `flowapprove-backend` — free Docker web service with `DATABASE_URL` auto-linked
+5. Click **Apply** → wait ~4 minutes for the first build.
+6. Copy the web service URL (e.g. `https://flowapprove-backend.onrender.com`).
+7. Deploy the **frontend on Vercel** (see [flowapprove-frontend/README.md](https://github.com/ThkSanidhya/flowapprove-frontend)), set `VITE_API_URL` to the Render URL + `/api`.
+8. Back in Render, update `CORS_ORIGINS` and `CSRF_TRUSTED_ORIGINS` to the Vercel URL and trigger a redeploy.
 
-See `flowapprove-docs/docs/deployment.md` for the full production checklist.
+> **Free-tier caveat**: Render spins down the web service after 15 min of inactivity. The first request after idle takes ~30 seconds to wake up. That's Render, not a bug.
+
+### Railway — manual
+
+Railway doesn't read `render.yaml`. Create the service and Postgres manually, then wire `DATABASE_URL` from the Postgres add-on into the backend service. Everything else is identical to the Render env vars above.
+
+### Anywhere else
+
+As long as the host runs your `Dockerfile` and can inject `DATABASE_URL`, you're fine. See `flowapprove-docs/docs/deployment.md` for the full production checklist.
 
 ---
 

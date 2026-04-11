@@ -1,0 +1,80 @@
+# Render Blueprint for FlowApprove backend.
+#
+# How to use:
+#   1. Push this file to the main branch of your flowapprove-backend repo.
+#   2. Go to https://dashboard.render.com/blueprints
+#   3. Click "New Blueprint Instance" and pick the flowapprove-backend repo.
+#   4. Render reads this file and creates BOTH the Postgres database AND the
+#      web service in one click — no manual config.
+#   5. After the first deploy finishes, copy the web service URL (e.g.
+#      https://flowapprove-backend.onrender.com) and set it as VITE_API_URL
+#      on the frontend (Vercel).
+#   6. Come back here and update CORS_ORIGINS + CSRF_TRUSTED_ORIGINS to the
+#      Vercel URL (e.g. https://flowapprove.vercel.app), then redeploy.
+#
+# Docs: https://render.com/docs/blueprint-spec
+
+databases:
+  - name: flowapprove-db
+    databaseName: flowapprove
+    user: flowapprove
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: flowapprove-backend
+    runtime: docker
+    plan: free
+    region: oregon          # change to frankfurt / singapore / ohio if preferred
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: true
+
+    envVars:
+      # --- Django core ---
+      - key: DJANGO_SECRET_KEY
+        generateValue: true     # Render generates a long random string
+
+      - key: DJANGO_DEBUG
+        value: "False"
+
+      - key: DJANGO_ALLOWED_HOSTS
+        value: ".onrender.com"
+
+      # --- Database (auto-wired from the flowapprove-db above) ---
+      - key: DATABASE_URL
+        fromDatabase:
+          name: flowapprove-db
+          property: connectionString
+
+      # --- Frontend origin (update after you deploy the Vercel frontend) ---
+      - key: CORS_ORIGINS
+        value: "https://flowapprove.vercel.app"
+
+      - key: CSRF_TRUSTED_ORIGINS
+        value: "https://flowapprove.vercel.app"
+
+      # --- JWT lifetimes ---
+      - key: JWT_ACCESS_MINUTES
+        value: "60"
+
+      # --- TLS handled by Render's proxy; don't redirect in Django ---
+      - key: SECURE_SSL_REDIRECT
+        value: "False"
+
+      # --- Email (optional; leave blank if you don't want notifications) ---
+      - key: EMAIL_HOST
+        sync: false             # set manually in the Render dashboard
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_USE_TLS
+        value: "True"
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        value: "noreply@flowapprove.onrender.com"
