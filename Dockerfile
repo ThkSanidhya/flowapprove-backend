@@ -19,13 +19,13 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/media /app/staticfiles
+RUN mkdir -p /app/media /app/staticfiles && chmod +x docker-entrypoint.sh
 
 EXPOSE 8000
 
 # Healthcheck hits the dedicated liveness probe (cheap, no auth needed)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -fsS http://localhost:8000/healthz || exit 1
 
-# Entrypoint: run migrations then start gunicorn
-CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn flowapprove_backend.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 4 --access-logfile - --error-logfile -"]
+# Entrypoint: wait-for-postgres -> migrate -> collectstatic -> gunicorn
+CMD ["./docker-entrypoint.sh"]
