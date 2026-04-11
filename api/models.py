@@ -20,8 +20,16 @@ class User(AbstractUser):
         return self.email
 
 class Workflow(models.Model):
+    SENDBACK_CHOICES = [
+        ('PREVIOUS_ONLY', 'Previous Step Only'),
+        ('ANY_PREVIOUS', 'Any Previous Step'),
+    ]
+
     name = models.CharField(max_length=255)
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
+    sendback_type = models.CharField(
+        max_length=15, choices=SENDBACK_CHOICES, default='PREVIOUS_ONLY'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
 class WorkflowStep(models.Model):
@@ -33,7 +41,12 @@ class WorkflowStep(models.Model):
         ordering = ['order']
 
 class Document(models.Model):
-    STATUS_CHOICES = [('PENDING', 'Pending'), ('APPROVED', 'Approved'), ('REJECTED', 'Rejected')]
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
+        ('CANCELLED', 'Cancelled'),
+    ]
 
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -94,6 +107,7 @@ class DocumentVersion(models.Model):
     file = models.FileField(upload_to='versions/')
     file_name = models.CharField(max_length=255)
     file_url = models.CharField(max_length=500)
+    file_type = models.CharField(max_length=100, default='application/pdf')
     file_size = models.IntegerField()
     uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE)
     version_note = models.TextField(blank=True)

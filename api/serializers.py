@@ -29,7 +29,7 @@ class WorkflowSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Workflow
-        fields = ['id', 'name', 'steps', 'created_at']
+        fields = ['id', 'name', 'sendback_type', 'steps', 'created_at']
 
 class DocumentApprovalSerializer(serializers.ModelSerializer):
     user_name = serializers.CharField(source='user.name', read_only=True)

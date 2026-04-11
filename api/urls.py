@@ -22,6 +22,8 @@ urlpatterns = [
     path('documents/<int:id>/approve', views.approve_document, name='approve_document'),
     path('documents/<int:id>/reject', views.reject_document, name='reject_document'),
     path('documents/<int:id>/sendback', views.send_back_document, name='send_back_document'),
+    path('documents/<int:id>/upload-version', views.upload_version, name='upload_version'),
+    path('documents/<int:id>/recall', views.recall_document, name='recall_document'),
     
     # Dashboard routes
     path('dashboard/stats', views.dashboard_stats, name='dashboard_stats'),

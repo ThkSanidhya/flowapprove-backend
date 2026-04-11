@@ -168,6 +168,7 @@ def workflows(request):
         with transaction.atomic():
             workflow = Workflow.objects.create(
                 name=data['name'],
+                sendback_type=data.get('sendbackType', 'PREVIOUS_ONLY'),
                 organization=request.user.organization
             )
             for i, step in enumerate(data.get('steps', [])):
@@ -205,6 +206,7 @@ def workflow_detail(request, id):
     elif request.method == 'PUT':
         data = request.data
         workflow.name = data.get('name', workflow.name)
+        workflow.sendback_type = data.get('sendbackType', workflow.sendback_type)
         workflow.save()
         workflow.steps.all().delete()
         for i, step in enumerate(data.get('steps', [])):
@@ -370,6 +372,22 @@ def get_document_detail(request, id):
     
     response_data = DocumentSerializer(doc).data
     response_data['canApprove'] = can_approve
+    response_data['canRecall'] = (
+        doc.status == 'PENDING' and doc.created_by_id == request.user.id
+    )
+    response_data['canUploadVersion'] = (
+        (doc.status == 'REJECTED' and doc.created_by_id == request.user.id)
+        or (
+            doc.status == 'PENDING'
+            and any(
+                a.user_id == request.user.id and a.step_order == doc.current_step
+                for a in approvals
+            )
+        )
+    )
+    response_data['sendbackType'] = (
+        doc.workflow.sendback_type if doc.workflow else 'PREVIOUS_ONLY'
+    )
     response_data['currentStep'] = doc.current_step
     response_data['timeline'] = timeline
     response_data['progress'] = progress
@@ -433,79 +451,256 @@ def approve_document(request, id):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def reject_document(request, id):
-    try:
-        doc = Document.objects.get(id=id, organization=request.user.organization)
-    except Document.DoesNotExist:
-        return Response({'error': 'Document not found'}, status=404)
+    with transaction.atomic():
+        try:
+            doc = Document.objects.select_for_update().get(
+                id=id, organization=request.user.organization
+            )
+        except Document.DoesNotExist:
+            return Response({'error': 'Document not found'}, status=404)
 
-    # Only the user assigned to the current step may reject
-    current_approval = doc.approvals.filter(step_order=doc.current_step, user=request.user).first()
-    if not current_approval:
-        return Response({'error': 'You are not authorized to reject this document'}, status=403)
+        # Only the user assigned to the current step may reject
+        current_approval = doc.approvals.select_for_update().filter(
+            step_order=doc.current_step, user=request.user
+        ).first()
+        if not current_approval:
+            return Response({'error': 'You are not authorized to reject this document'}, status=403)
 
-    doc.status = 'REJECTED'
-    doc.save()
-    
-    DocumentHistory.objects.create(
-        document=doc,
-        user=request.user,
-        action='REJECTED',
-        comment=request.data.get('comment', '')
-    )
-    
+        if current_approval.status != 'PENDING':
+            return Response({'error': 'This step has already been processed'}, status=400)
+
+        # Mark the current step as REJECTED and record who/why
+        current_approval.status = 'REJECTED'
+        current_approval.comment = request.data.get('comment', '')
+        current_approval.approved_at = timezone.now()
+        current_approval.save()
+
+        # Full reset: clear every other approval so version upload can restart cleanly
+        doc.approvals.exclude(id=current_approval.id).update(
+            status='PENDING', approved_at=None, comment=''
+        )
+
+        doc.status = 'REJECTED'
+        doc.save()
+
+        DocumentHistory.objects.create(
+            document=doc,
+            user=request.user,
+            action='REJECTED',
+            comment=request.data.get('comment', '')
+        )
+
     return Response({'message': 'Rejected'})
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def send_back_document(request, id):
-    try:
-        doc = Document.objects.get(id=id, organization=request.user.organization)
-    except Document.DoesNotExist:
-        return Response({'error': 'Document not found'}, status=404)
-    
-    # Find current approval
-    current_approval = doc.approvals.filter(step_order=doc.current_step).first()
-    if not current_approval:
-        return Response({'error': f'No approval found for step {doc.current_step}'}, status=400)
-    
-    if current_approval.user.id != request.user.id:
-        return Response({'error': f'You are not authorized. This step is assigned to {current_approval.user.name}'}, status=403)
-    
-    if current_approval.status != 'PENDING':
-        return Response({'error': 'This step has already been processed'}, status=400)
-    
-    reason = request.data.get('reason')
-    if not reason:
-        return Response({'error': 'Reason required'}, status=400)
-    
-    # Mark current as rejected
-    current_approval.status = 'REJECTED'
-    current_approval.comment = reason
-    current_approval.save()
-    
-    # Move back one step
-    prev_step = max(1, doc.current_step - 1)
-    doc.current_step = prev_step
-    doc.status = 'PENDING'
-    doc.save()
-    
-    # Reset previous approval to pending (if exists and was approved)
-    prev_approval = doc.approvals.filter(step_order=prev_step).first()
-    if prev_approval and prev_approval.status == 'APPROVED':
-        prev_approval.status = 'PENDING'
-        prev_approval.approved_at = None
-        # Use empty string instead of None to avoid IntegrityError
-        prev_approval.comment = ''
-        prev_approval.save()
-    
-    DocumentHistory.objects.create(
-        document=doc,
-        user=request.user,
-        action='SENT_BACK',
-        comment=f'Sent back to step {prev_step}: {reason}'
-    )
-    
-    return Response({'message': f'Sent back to step {prev_step}'})
+    with transaction.atomic():
+        try:
+            doc = Document.objects.select_for_update().get(
+                id=id, organization=request.user.organization
+            )
+        except Document.DoesNotExist:
+            return Response({'error': 'Document not found'}, status=404)
+
+        current_approval = doc.approvals.select_for_update().filter(
+            step_order=doc.current_step
+        ).first()
+        if not current_approval:
+            return Response(
+                {'error': f'No approval found for step {doc.current_step}'}, status=400
+            )
+        if current_approval.user_id != request.user.id:
+            return Response(
+                {'error': f'You are not authorized. This step is assigned to {current_approval.user.name}'},
+                status=403,
+            )
+        if current_approval.status != 'PENDING':
+            return Response({'error': 'This step has already been processed'}, status=400)
+
+        reason = request.data.get('reason')
+        if not reason:
+            return Response({'error': 'Reason required'}, status=400)
+
+        # Determine target step (default: immediately previous)
+        try:
+            target_step = int(request.data.get('target_step', doc.current_step - 1))
+        except (TypeError, ValueError):
+            return Response({'error': 'target_step must be an integer'}, status=400)
+
+        if target_step < 1 or target_step >= doc.current_step:
+            return Response(
+                {'error': 'Target step must be between 1 and current_step - 1'}, status=400,
+            )
+
+        # Enforce workflow policy
+        sendback_type = doc.workflow.sendback_type if doc.workflow else 'PREVIOUS_ONLY'
+        if sendback_type == 'PREVIOUS_ONLY' and target_step != doc.current_step - 1:
+            return Response(
+                {'error': 'This workflow only allows sending back to the immediately previous step'},
+                status=400,
+            )
+
+        # Mark the current (sending) step as REJECTED with the reason
+        current_approval.status = 'REJECTED'
+        current_approval.comment = reason
+        current_approval.approved_at = timezone.now()
+        current_approval.save()
+
+        # Partial reset: every approval from target_step .. current_step - 1 becomes PENDING again.
+        doc.approvals.filter(
+            step_order__gte=target_step, step_order__lt=doc.current_step
+        ).update(status='PENDING', approved_at=None, comment='')
+
+        doc.current_step = target_step
+        doc.status = 'PENDING'
+        doc.save()
+
+        DocumentHistory.objects.create(
+            document=doc,
+            user=request.user,
+            action='SENT_BACK',
+            comment=f'Sent back to step {target_step}: {reason}',
+        )
+
+    return Response({'message': f'Sent back to step {target_step}'})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def upload_version(request, id):
+    """Upload a revised file after a rejection (full reset) or sendback (partial)."""
+    file = request.FILES.get('file')
+    if not file:
+        return Response({'error': 'No file uploaded'}, status=400)
+
+    # Same upload constraints as upload_document
+    MAX_FILE_SIZE = 50 * 1024 * 1024
+    if file.size > MAX_FILE_SIZE:
+        return Response({'error': 'File too large (max 50MB)'}, status=413)
+    ALLOWED_TYPES = {
+        'application/pdf', 'image/jpeg', 'image/png',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }
+    if file.content_type not in ALLOWED_TYPES:
+        return Response({'error': f'Unsupported file type: {file.content_type}'}, status=400)
+
+    with transaction.atomic():
+        try:
+            doc = Document.objects.select_for_update().get(
+                id=id, organization=request.user.organization
+            )
+        except Document.DoesNotExist:
+            return Response({'error': 'Document not found'}, status=404)
+
+        if doc.status == 'REJECTED':
+            # Only the creator can resubmit after a full rejection.
+            if doc.created_by_id != request.user.id:
+                return Response(
+                    {'error': 'Only the document creator can upload a new version after rejection'},
+                    status=403,
+                )
+        elif doc.status == 'PENDING':
+            # After a sendback, the current-step user uploads the revision.
+            is_assignee = doc.approvals.filter(
+                step_order=doc.current_step, user=request.user
+            ).exists()
+            if not is_assignee:
+                return Response(
+                    {'error': 'Only the current step assignee can upload a version'},
+                    status=403,
+                )
+        else:
+            return Response(
+                {'error': f'Cannot upload a new version while document is {doc.status}'},
+                status=400,
+            )
+
+        # 1. Archive the current file as a DocumentVersion before replacing it
+        latest = doc.versions.order_by('-version_number').first()
+        archived_version_number = (latest.version_number + 1) if latest else 1
+        DocumentVersion.objects.create(
+            document=doc,
+            version_number=archived_version_number,
+            file=doc.file,
+            file_name=doc.file_name,
+            file_url=doc.file_url,
+            file_type=doc.file_type,
+            file_size=doc.file_size,
+            uploaded_by=doc.created_by,
+            version_note=f'Archived before revision',
+        )
+
+        # 2. Write the new file to disk using the same layout as upload_document
+        ext = os.path.splitext(file.name)[1]
+        new_file_name = f"{uuid.uuid4().hex}{ext}"
+        file_path = os.path.join('documents', new_file_name)
+        full_path = os.path.join(settings.MEDIA_ROOT, file_path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, 'wb+') as dest:
+            for chunk in file.chunks():
+                dest.write(chunk)
+
+        # 3. Swap the Document file pointers
+        doc.file = file_path
+        doc.file_name = file.name
+        doc.file_url = f"/media/{file_path}"
+        doc.file_type = file.content_type
+        doc.file_size = os.path.getsize(full_path)
+
+        # 4. Reset workflow state based on the prior status
+        if doc.status == 'REJECTED':
+            doc.current_step = 1
+            doc.status = 'PENDING'
+            doc.approvals.all().update(status='PENDING', approved_at=None, comment='')
+        # PENDING (sendback): current_step stays where it is, approvals already partially reset.
+
+        doc.save()
+
+        version_note = request.data.get('version_note') or request.POST.get('version_note', '')
+        DocumentHistory.objects.create(
+            document=doc,
+            user=request.user,
+            action='VERSION_UPLOADED',
+            comment=(f'New version uploaded. {version_note}').strip(),
+        )
+
+    return Response({
+        'message': 'Version uploaded successfully',
+        'archived_version_number': archived_version_number,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def recall_document(request, id):
+    """Creator-only recall: withdraw a PENDING document and mark it CANCELLED."""
+    with transaction.atomic():
+        try:
+            doc = Document.objects.select_for_update().get(
+                id=id, organization=request.user.organization
+            )
+        except Document.DoesNotExist:
+            return Response({'error': 'Document not found'}, status=404)
+
+        if doc.created_by_id != request.user.id:
+            return Response({'error': 'Only the document creator can recall'}, status=403)
+        if doc.status != 'PENDING':
+            return Response({'error': 'Only PENDING documents can be recalled'}, status=400)
+
+        doc.status = 'CANCELLED'
+        doc.save()
+        doc.approvals.all().update(status='PENDING', approved_at=None, comment='')
+
+        DocumentHistory.objects.create(
+            document=doc,
+            user=request.user,
+            action='RECALLED',
+            comment=request.data.get('reason', 'Document recalled by creator'),
+        )
+
+    return Response({'message': 'Document recalled successfully'})
 
 # ==================== DASHBOARD ====================
 
@@ -535,6 +730,7 @@ def dashboard_stats(request):
         'approvedByMe': docs.filter(approvals__user=request.user, approvals__status='APPROVED').count(),
         'sentBack': docs.filter(status='REJECTED').count(),
         'completed': docs.filter(status='APPROVED').count(),
+        'cancelled': docs.filter(status='CANCELLED').count(),
     })
 
 @api_view(['GET'])
@@ -594,7 +790,12 @@ def get_user_documents(request):
             'createdAt': doc.created_at,
             'updatedAt': doc.updated_at,
             'status': doc.status,
-            'statusColor': '#28a745' if doc.status == 'APPROVED' else '#dc3545' if doc.status == 'REJECTED' else '#ffc107',
+            'statusColor': (
+                '#28a745' if doc.status == 'APPROVED'
+                else '#dc3545' if doc.status == 'REJECTED'
+                else '#6c757d' if doc.status == 'CANCELLED'
+                else '#ffc107'
+            ),
             'currentStep': doc.current_step,
             'totalSteps': len(doc.workflow.steps.all()) if doc.workflow else 1,
             'currentOwner': current_approval.user.name if current_approval else 'No assignee',
