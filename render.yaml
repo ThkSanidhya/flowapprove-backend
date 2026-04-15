@@ -52,10 +52,10 @@ services:
 
       # --- Frontend origin (update after you deploy the Vercel frontend) ---
       - key: CORS_ORIGINS
-        value: "https://flowapprove.vercel.app"
+        value: "https://flowapprove-frontend.vercel.app"
 
       - key: CSRF_TRUSTED_ORIGINS
-        value: "https://flowapprove.vercel.app"
+        value: "https://flowapprove-frontend.vercel.app"
 
       # --- JWT lifetimes ---
       - key: JWT_ACCESS_MINUTES

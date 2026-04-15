@@ -99,24 +99,21 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ---- CORS / CSRF ----
-# In DEBUG we allow all origins for local development.
-# In production, set CORS_ORIGINS / CSRF_TRUSTED as comma-separated URLs.
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
-else:
-    CORS_ALLOW_ALL_ORIGINS = False
-    CORS_ALLOWED_ORIGINS = [
-        o.strip() for o in os.environ.get('CORS_ORIGINS', '').split(',') if o.strip()
-    ]
-    CSRF_TRUSTED_ORIGINS = [
-        o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()
-    ]
+CORS_ALLOWED_ORIGINS = ["https://flowapprove-frontend.vercel.app"]
+CORS_ALLOW_CREDENTIALS = True
+CSRF_TRUSTED_ORIGINS = ["https://flowapprove-frontend.vercel.app"]
+
+# For temporary debug:
+CORS_ALLOW_ALL_ORIGINS = True
 
 # ---- Security headers (prod only) ----
 X_FRAME_OPTIONS = 'DENY'
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = 'same-origin'
 if not DEBUG:
+    ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '*').split(',') if h.strip()]
+    if "flowapprove-backend.onrender.com" not in ALLOWED_HOSTS and "*" not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append("flowapprove-backend.onrender.com")
     SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'True').lower() == 'true'
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
@@ -124,6 +121,8 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+else:
+    ALLOWED_HOSTS = ['*']
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
