@@ -24,6 +24,7 @@ urlpatterns = [
     path('documents/<int:id>/sendback/', views.send_back_document, name='send_back_document'),
     path('documents/<int:id>/upload-version/', views.upload_version, name='upload_version'),
     path('documents/<int:id>/recall/', views.recall_document, name='recall_document'),
+    path('documents/<int:id>/reassign/', views.admin_reassign_step, name='admin_reassign_step'),
     path('documents/<int:id>/comments/', views.document_comments, name='document_comments'),
     path('documents/<int:id>/comments/reference/', views.document_comments, name='document_comments_reference'),
     

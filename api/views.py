@@ -223,6 +223,13 @@ def workflow_detail(request, id):
     except Workflow.DoesNotExist:
         return Response({'error': 'Workflow not found'}, status=404)
     
+    # Check if workflow is in use by PENDING documents
+    pending_docs = Document.objects.filter(workflow=workflow, status='PENDING')
+    if request.method in ('PUT', 'DELETE') and pending_docs.exists():
+        return Response({
+            'error': f'This workflow is currently being used by {pending_docs.count()} active document(s) and cannot be modified or deleted.'
+        }, status=400)
+
     if request.method == 'GET':
         return Response(WorkflowSerializer(workflow).data)
     
@@ -617,11 +624,11 @@ def upload_version(request, id):
         except Document.DoesNotExist:
             return Response({'error': 'Document not found'}, status=404)
 
-        if doc.status == 'REJECTED':
-            # Only the creator can resubmit after a full rejection.
+        if doc.status in ('REJECTED', 'CANCELLED'):
+            # Only the creator can resubmit after a full rejection or recall.
             if doc.created_by_id != request.user.id:
                 return Response(
-                    {'error': 'Only the document creator can upload a new version after rejection'},
+                    {'error': f'Only the document creator can upload a new version after {doc.status.lower()}'},
                     status=403,
                 )
         elif doc.status == 'PENDING':
@@ -673,7 +680,7 @@ def upload_version(request, id):
         doc.file_size = os.path.getsize(full_path)
 
         # 4. Reset workflow state based on the prior status
-        if doc.status == 'REJECTED':
+        if doc.status in ('REJECTED', 'CANCELLED'):
             doc.current_step = 1
             doc.status = 'PENDING'
             doc.approvals.all().update(status='PENDING', approved_at=None, comment='')
@@ -769,6 +776,49 @@ def recall_document(request, id):
         )
 
     return Response({'message': 'Document recalled successfully'})
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_reassign_step(request, id):
+    """Admin-only: reassign the user for a specific step of a document's workflow."""
+    if request.user.role != 'ADMIN':
+        return Response({'error': 'Admin access required'}, status=403)
+    
+    with transaction.atomic():
+        try:
+            doc = Document.objects.select_for_update().get(
+                id=id, organization=request.user.organization
+            )
+        except Document.DoesNotExist:
+            return Response({'error': 'Document not found'}, status=404)
+
+        step_order = request.data.get('stepOrder')
+        new_user_id = request.data.get('newUserId')
+        
+        if not step_order or not new_user_id:
+            return Response({'error': 'stepOrder and newUserId are required'}, status=400)
+            
+        try:
+            new_user = User.objects.get(id=new_user_id, organization=request.user.organization)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found in your organization'}, status=404)
+            
+        approval = doc.approvals.filter(step_order=step_order).first()
+        if not approval:
+            return Response({'error': f'Step {step_order} not found for this document'}, status=404)
+            
+        old_user_name = approval.user.name
+        approval.user = new_user
+        approval.save()
+        
+        DocumentHistory.objects.create(
+            document=doc,
+            user=request.user,
+            action='REASSIGNED',
+            comment=f'Admin reassigned Step {step_order} from {old_user_name} to {new_user.name}'
+        )
+        
+    return Response({'message': f'Step {step_order} reassigned to {new_user.name}'})
 
 # ==================== DASHBOARD ====================
 
