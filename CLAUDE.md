@@ -28,12 +28,18 @@ Single Django app `api/` holds the entire domain. HTTP routes are function-based
 ## Domain model (`api/models.py`)
 
 - `Organization` owns `User`s, `Workflow`s, `Document`s.
-- `Workflow` has ordered `WorkflowStep`s, each assigned to a `User`.
-- `Document` references a `Workflow` and tracks `status` (`PENDING`/`APPROVED`/`REJECTED`) plus `current_step` (1-indexed).
+- `Workflow` has ordered `WorkflowStep`s, each assigned to a `User`. A `Workflow` referenced by any `PENDING` `Document` is immutable — admin `PUT`/`DELETE` returns **400** until those documents resolve.
+- `Document` references a `Workflow` and tracks `status` (`PENDING`/`APPROVED`/`REJECTED`/`CANCELLED`) plus `current_step` (1-indexed).
 - `DocumentApproval` records per-step decisions.
-- `DocumentComment` (optionally page-anchored for PDFs), `DocumentHistory` (append-only audit log), and `DocumentVersion` (re-uploads after rejection) hang off `Document`.
+- `DocumentComment` (optionally page-anchored for PDFs), `DocumentHistory` (append-only audit log), and `DocumentVersion` (re-uploads after rejection / recall / sendback) hang off `Document`.
 
-Approve / reject / sendback endpoints advance or reset `current_step` and append to `DocumentApproval` + `DocumentHistory`. **Keep the three in sync inside a single `transaction.atomic()`.**
+Transitions:
+- **approve / reject / sendback** — only the current-step assignee; advance or reset `current_step` and append to `DocumentApproval` + `DocumentHistory`.
+- **recall** — creator only, only while `PENDING`; sets `status=CANCELLED` and clears approvals.
+- **upload-version** — creator after `REJECTED` **or** `CANCELLED` (full reset to step 1); current-step user after a sendback (no additional reset).
+- **reassign** — admin-only (`POST /documents/<id>/reassign/` with `{stepOrder, newUserId}`); swaps `DocumentApproval.user` on one step without moving `current_step`; logs a `REASSIGNED` `DocumentHistory` entry. `newUserId` must belong to the caller's org.
+
+**Keep `current_step` + `DocumentApproval.status` + `DocumentHistory` in sync inside a single `transaction.atomic()`.**
 
 ## Golden rules (MUST follow)
 
