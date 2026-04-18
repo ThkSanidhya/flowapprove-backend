@@ -5,6 +5,7 @@ from django.conf import settings
 from django.db import connection, transaction
 from django.db import models  # for Q / F expressions
 from django.db.models import F
+from django.utils.dateparse import parse_date
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -313,7 +314,7 @@ def upload_document(request):
             organization=request.user.organization,
             created_by=request.user,
             workflow=workflow,
-            status='PENDING',
+            status='PENDING' if workflow else 'APPROVED',
             current_step=1
         )
         
@@ -333,6 +334,13 @@ def upload_document(request):
             action='UPLOADED',
             comment=f'Document "{doc.title}" uploaded'
         )
+        if not workflow:
+            DocumentHistory.objects.create(
+                document=doc,
+                user=request.user,
+                action='APPROVED',
+                comment='Document approved automatically because no workflow was selected'
+            )
     
     return Response(DocumentSerializer(doc).data, status=201)
 
@@ -860,6 +868,8 @@ def get_user_documents(request):
     limit = int(request.GET.get('limit', 10))
     status = request.GET.get('status', '')
     search = request.GET.get('search', '')
+    date_from = parse_date(request.GET.get('dateFrom', ''))
+    date_to = parse_date(request.GET.get('dateTo', ''))
     
     if user.role == 'ADMIN':
         docs = Document.objects.filter(organization=org)
@@ -878,6 +888,10 @@ def get_user_documents(request):
         if search.isdigit():
             q |= models.Q(id=int(search))
         docs = docs.filter(q)
+    if date_from:
+        docs = docs.filter(created_at__date__gte=date_from)
+    if date_to:
+        docs = docs.filter(created_at__date__lte=date_to)
 
     total = docs.count()
     start = (page - 1) * limit

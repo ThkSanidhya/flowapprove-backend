@@ -11,8 +11,14 @@ These cover the IDOR class of bugs patched in the
     * Document upload must reject cross-org workflowId.
 """
 
+import shutil
+import tempfile
 from io import BytesIO
+from datetime import timedelta
 
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase, APIClient
 
 from api.models import (
@@ -25,6 +31,9 @@ from api.models import (
     DocumentVersion,
     DocumentHistory,
 )
+
+
+TEST_MEDIA_ROOT = tempfile.mkdtemp()
 
 
 def _make_multi_step_doc(org, users, *, sendback_type="PREVIOUS_ONLY", current_step=1):
@@ -230,6 +239,86 @@ class WorkflowStepAssignmentTests(APITestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 201)
+
+
+@override_settings(MEDIA_ROOT=TEST_MEDIA_ROOT)
+class UploadDocumentFlowTests(APITestCase):
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(TEST_MEDIA_ROOT, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Org Upload")
+        self.creator = _make_user("creator@upload.test", self.org, role="ADMIN")
+        self.client = APIClient()
+        self.client.force_authenticate(self.creator)
+
+    def _pdf(self):
+        return SimpleUploadedFile(
+            "direct.pdf",
+            b"%PDF-1.4\nflowapprove",
+            content_type="application/pdf",
+        )
+
+    def test_upload_without_workflow_is_automatically_approved(self):
+        resp = self.client.post(
+            "/api/documents/upload",
+            {"title": "Direct document", "file": self._pdf()},
+            format="multipart",
+        )
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        doc = Document.objects.get(id=resp.data["id"])
+        self.assertEqual(doc.status, "APPROVED")
+        self.assertIsNone(doc.workflow)
+        self.assertEqual(doc.approvals.count(), 0)
+        self.assertTrue(
+            doc.history.filter(
+                action="APPROVED",
+                comment__icontains="no workflow",
+            ).exists()
+        )
+
+
+class DashboardDocumentFilterTests(APITestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Org Dash")
+        self.user = _make_user("dash@x.test", self.org, role="ADMIN")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def _doc(self, title, created_at):
+        doc = Document.objects.create(
+            title=title,
+            description="",
+            file="documents/fake.pdf",
+            file_name="fake.pdf",
+            file_url="/media/documents/fake.pdf",
+            file_type="application/pdf",
+            file_size=10,
+            organization=self.org,
+            created_by=self.user,
+            status="APPROVED",
+            current_step=1,
+        )
+        Document.objects.filter(id=doc.id).update(created_at=created_at)
+        return doc
+
+    def test_dashboard_documents_respects_date_range_filters(self):
+        today = timezone.now()
+        old = today - timedelta(days=10)
+        self._doc("old", old)
+        self._doc("new", today)
+
+        resp = self.client.get(
+            "/api/dashboard/documents",
+            {"dateFrom": today.date().isoformat(), "dateTo": today.date().isoformat()},
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        titles = [doc["title"] for doc in resp.data["documents"]]
+        self.assertEqual(titles, ["new"])
 
 
 class UploadWorkflowScopingTests(APITestCase):
